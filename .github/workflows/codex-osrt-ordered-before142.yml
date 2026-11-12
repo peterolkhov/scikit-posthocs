@@ -1,0 +1,310 @@
+name: new136 OSRT ordered alternative before142
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/observe-osrt-ordered142]
+permissions:
+  contents: read
+jobs:
+  before:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PIP_NO_CACHE_DIR: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      PYTHONPATH: ""
+    steps:
+      - name: Checkout whole exact target source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: maximtrp/scikit-posthocs
+          ref: b1fc99aa5a6f731aace6300530f1f4ff6b246b02
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup exact Python without cache
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.12'
+      - name: Stage immutable probe and small raw integrity assess drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NEW142_SOURCE="$GITHUB_WORKSPACE"
+          export NEW142_EVIDENCE="$RUNNER_TEMP/new142-evidence"
+          mkdir -p "$NEW142_EVIDENCE"
+          echo "NEW142_SOURCE=$NEW142_SOURCE" >> "$GITHUB_ENV"
+          echo "NEW142_EVIDENCE=$NEW142_EVIDENCE" >> "$GITHUB_ENV"
+          cat > "$NEW142_EVIDENCE/probe.py" <<'NEW142_PROBE_PY'
+          """UNEXECUTED public-API diagnosis; run only in an authorized hosted sandbox."""
+          import json
+          import math
+          from statistics import mean, variance
+
+          import pandas as pd
+          from scipy.stats import t
+          import scikit_posthocs as sp
+
+          checks = []
+
+
+          def check(name, actual, expected):
+              ok = math.isclose(float(actual), float(expected), rel_tol=1e-10, abs_tol=1e-12)
+              checks.append(ok)
+              print(json.dumps({"check": name, "actual": float(actual),
+                                "expected": float(expected), "pass": ok}))
+
+
+          def signed_h(groups):
+              n = len(groups[0])
+              assert all(len(g) == n for g in groups)
+              pooled_var = sum((n - 1) * variance(g) for g in groups) / (len(groups) * (n - 1))
+              means = list(map(mean, groups))
+              return max(means[j] - means[i] for i in range(len(groups))
+                         for j in range(i + 1, len(groups))) / math.sqrt(pooled_var / n)
+
+
+          def public_call(groups, shape):
+              if shape == "list":
+                  return sp.test_osrt(groups)
+              frame = pd.DataFrame({"dose": [i for i, g in enumerate(groups) for _ in g],
+                                    "response": [v for g in groups for v in g]})
+              return sp.test_osrt(frame, val_col="response", group_col="dose", sort=True)
+
+
+          low = [1., 2., 3., 4.]
+          high = [10., 11., 12., 13.]
+          for shape in ("list", "frame"):
+              for name, groups in (("increasing", [low, high]),
+                                   ("decreasing", [high, low]),
+                                   ("equal_nonconstant", [low, low])):
+                  p, h, df = public_call(groups, shape)
+                  h_ref = signed_h(groups)
+                  df_ref = sum(map(len, groups)) - len(groups)
+                  # For exactly two balanced normal groups, H/sqrt(2) has Student t_df.
+                  p_ref = t.sf(h_ref / math.sqrt(2), df_ref)
+                  check(shape + "/" + name + "/h", h, h_ref)
+                  check(shape + "/" + name + "/p", p, p_ref)
+                  check(shape + "/" + name + "/df", df, df_ref)
+              base = public_call([low, high], shape)
+              translated = public_call([[v + 100 for v in low], [v + 100 for v in high]], shape)
+              scaled = public_call([[v * 3 for v in low], [v * 3 for v in high]], shape)
+              for label, result in (("translation_control", translated), ("scale_control", scaled)):
+                  for i, field in enumerate(("p", "h", "df")):
+                      check(shape + "/" + label + "/" + field, result[i], base[i])
+              for name, groups in (("three_increasing", [low, [5., 6., 7., 8.], high]),
+                                   ("three_decreasing", [high, [5., 6., 7., 8.], low])):
+                  # No multigroup p-value oracle is asserted here.
+                  _, h, df = public_call(groups, shape)
+                  check(shape + "/" + name + "/h", h, signed_h(groups))
+                  check(shape + "/" + name + "/df", df, 9)
+
+          print(json.dumps({"passed": sum(checks), "failed": len(checks) - sum(checks)}))
+          raise SystemExit(not all(checks))
+          NEW142_PROBE_PY
+          cat > "$NEW142_EVIDENCE/capture.py" <<'NEW142_CAPTURE_PY'
+          """Hosted-only raw public tuples; deliberately contains no numerical assertions."""
+          import importlib.metadata as md
+          import json
+          import sys
+          import traceback
+          import pandas as pd
+          import scikit_posthocs as sp
+
+          print("NEW142_RUNTIME", json.dumps({"python": sys.version, "module": sp.__file__,
+                "omnibus_module": sys.modules["scikit_posthocs._omnibus"].__file__,
+                "versions": {name: md.version(name) for name in
+                             ["scikit-posthocs", "numpy", "scipy", "pandas", "statsmodels", "seaborn", "matplotlib"]}}), flush=True)
+          low = [1., 2., 3., 4.]
+          high = [10., 11., 12., 13.]
+          cases = [("increasing", [low, high]), ("decreasing", [high, low]),
+                   ("equal_nonconstant", [low, low]),
+                   ("translation_control", [[v + 100 for v in low], [v + 100 for v in high]]),
+                   ("scale_control", [[v * 3 for v in low], [v * 3 for v in high]]),
+                   ("three_increasing", [low, [5., 6., 7., 8.], high]),
+                   ("three_decreasing", [high, [5., 6., 7., 8.], low])]
+          errors = 0
+          for shape in ("list", "frame"):
+              for name, groups in cases:
+                  record = {"shape": shape, "case": name, "groups": groups}
+                  try:
+                      if shape == "list":
+                          result = sp.test_osrt(groups)
+                      else:
+                          data = pd.DataFrame({"dose": [i for i, g in enumerate(groups) for _ in g],
+                                               "response": [v for g in groups for v in g]})
+                          result = sp.test_osrt(data, val_col="response", group_col="dose", sort=True)
+                      record.update(result=[float(value) for value in result], error=None)
+                  except Exception as error:
+                      errors += 1
+                      record["error"] = {"type": type(error).__name__, "message": str(error),
+                                         "traceback": traceback.format_exc()}
+                  print("NEW142_RAW", json.dumps(record, allow_nan=False), flush=True)
+          raise SystemExit(2 if errors else 0)
+          NEW142_CAPTURE_PY
+          cat > "$NEW142_EVIDENCE/guard.py" <<'NEW142_GUARD_PY'
+          """Small hosted source/install/probe integrity guard; imports no target code."""
+          import hashlib
+          import importlib.metadata as md
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          from urllib.parse import unquote, urlparse
+
+          root = Path(os.environ["NEW142_SOURCE"]).resolve()
+          evidence = Path(os.environ["NEW142_EVIDENCE"]).resolve()
+          stage = sys.argv[1]
+          PIN = "b1fc99aa5a6f731aace6300530f1f4ff6b246b02"
+          TREE = "eb984436666691a58aa07eb79d480ae337c32023"
+          PROBE = "32a8c0c0c15bfdf0df01931c3204aab1b22cc80b5bffd5fa6726beb254252bdb"
+
+          def git(*args):
+              return subprocess.check_output(["git", "-C", str(root), *args])
+
+          def sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+          assert git("rev-parse", "HEAD").decode().strip() == PIN
+          assert git("rev-parse", "HEAD^{tree}").decode().strip() == TREE
+          tracked = {}
+          for entry in git("ls-files", "--stage", "-z").split(b"\0"):
+              if not entry:
+                  continue
+              header, name = entry.split(b"\t", 1)
+              mode, blob, index_stage = header.split()
+              assert index_stage == b"0" and mode in (b"100644", b"100755")
+              path = root / os.fsdecode(name)
+              assert path.is_file() and not path.is_symlink()
+              raw = path.read_bytes()
+              assert hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == blob.decode()
+              tracked[os.fsdecode(name)] = sha(raw)
+          source = {"pin": PIN, "tree": TREE, "files": tracked}
+          assert sha((evidence / "probe.py").read_bytes()) == PROBE
+          probes = {name: sha((evidence / name).read_bytes()) for name in
+                    ("probe.py", "capture.py", "guard.py", "assess.py")}
+          record = {"source": source, "probes": probes}
+          if stage == "source":
+              (evidence / "source-before.json").write_text(json.dumps(record, sort_keys=True))
+          else:
+              assert json.loads((evidence / "source-before.json").read_text()) == record
+              spec = importlib.util.find_spec("scikit_posthocs")
+              assert spec and spec.origin
+              installed = Path(spec.origin).resolve().parent
+              assert not installed.is_relative_to(root)
+              installed_files = {str(path.relative_to(installed)): sha(path.read_bytes())
+                                 for path in installed.rglob("*.py")}
+              source_files = {str(path.relative_to(root / "scikit_posthocs")): sha(path.read_bytes())
+                              for path in (root / "scikit_posthocs").rglob("*.py")}
+              assert installed_files == source_files
+              direct = json.loads(md.distribution("scikit-posthocs").read_text("direct_url.json"))
+              url = urlparse(direct["url"])
+              assert url.scheme == "file" and Path(unquote(url.path)).resolve() == root
+              assert not direct.get("dir_info", {}).get("editable", False)
+              record.update(installed_module=str(installed), installed_files=installed_files, direct_url=direct)
+              if stage == "before":
+                  (evidence / "runtime-before.json").write_text(json.dumps(record, sort_keys=True))
+              elif stage == "after":
+                  assert json.loads((evidence / "runtime-before.json").read_text()) == record
+              else:
+                  raise ValueError(stage)
+          print("NEW142_GUARD", json.dumps({"stage": stage, "pin": PIN, "tree": TREE,
+                "tracked_count": len(tracked), "source_sha256": sha(json.dumps(tracked, sort_keys=True).encode()),
+                "probes": probes, "installed_module": record.get("installed_module"),
+                "installed_sha256": sha(json.dumps(record.get("installed_files", {}), sort_keys=True).encode()),
+                "unchanged": True}), flush=True)
+          NEW142_GUARD_PY
+          cat > "$NEW142_EVIDENCE/assess.py" <<'NEW142_ASSESS_PY'
+          """Assess saved completed raw/check logs only; imports no target code."""
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["NEW142_EVIDENCE"])
+          raw_status = (p / "raw.status").read_text().strip()
+          probe_status = (p / "probe.status").read_text().strip()
+          raw = [json.loads(line[len("NEW142_RAW "):]) for line in (p / "raw.log").read_text().splitlines()
+                 if line.startswith("NEW142_RAW ")]
+          records = []
+          for line in (p / "probe.log").read_text().splitlines():
+              if line.startswith("{"):
+                  records.append(json.loads(line))
+          checks = [record for record in records if "check" in record]
+          summaries = [record for record in records if "failed" in record]
+          shapes = ("list", "frame")
+          cases = ("increasing", "decreasing", "equal_nonconstant", "translation_control",
+                   "scale_control", "three_increasing", "three_decreasing")
+          raw_keys = {(r["shape"], r["case"]) for r in raw}
+          expected_keys = {(shape, case) for shape in shapes for case in cases}
+          expected_checks = {shape + "/" + case + "/" + field for shape in shapes
+              for case, fields in [("increasing", ("p", "h", "df")),
+                                   ("decreasing", ("p", "h", "df")),
+                                   ("equal_nonconstant", ("p", "h", "df")),
+                                   ("translation_control", ("p", "h", "df")),
+                                   ("scale_control", ("p", "h", "df")),
+                                   ("three_increasing", ("h", "df")),
+                                   ("three_decreasing", ("h", "df"))] for field in fields}
+          expected_failures = {shape + "/" + suffix for shape in shapes for suffix in
+              ("increasing/p", "decreasing/h", "decreasing/p", "equal_nonconstant/p", "three_decreasing/h")}
+          actual_failures = {r["check"] for r in checks if not r["pass"]}
+          conditions = {
+              "raw_status_0": raw_status == "0", "probe_status_1": probe_status == "1",
+              "all_raw_tuples": len(raw) == 14 and raw_keys == expected_keys,
+              "no_public_errors": all(r.get("error") is None for r in raw),
+              "all_38_unique_checks": len(checks) == 38 and {r["check"] for r in checks} == expected_checks,
+              "exact_10_failures": actual_failures == expected_failures,
+              "exact_summary": summaries == [{"passed": 28, "failed": 10}],
+              "check_booleans_consistent": all(r["pass"] == math.isclose(r["actual"], r["expected"],
+                  rel_tol=1e-10, abs_tol=1e-12) for r in checks),
+          }
+          raw_map = {(r["shape"], r["case"]): r for r in raw}
+          for record in checks:
+              shape, case, field = record["check"].split("/")
+              raw_record = raw_map.get((shape, case), {})
+              value = raw_record.get("result", [None] * 3)[("p", "h", "df").index(field)]
+              conditions["raw_agrees/" + record["check"]] = value == record["actual"]
+          print("NEW142_ASSESS", json.dumps({"raw_status": raw_status, "probe_status": probe_status,
+                "expected_failures": sorted(expected_failures), "actual_failures": sorted(actual_failures),
+                "conditions": conditions, "qualified_before_observation": all(conditions.values()),
+                "passing_job_means_predicted_bug_observed_not_repaired": True}), flush=True)
+          raise SystemExit(0 if all(conditions.values()) else 2)
+          NEW142_ASSESS_PY
+          python "$NEW142_EVIDENCE/guard.py" source
+      - name: Normally install exact whole project with its official dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/new142-venv"
+          echo "$RUNNER_TEMP/new142-venv/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/new142-venv/bin:$PATH"
+          python -m pip install --no-cache-dir .
+          python -m pip list
+          cd "$NEW142_EVIDENCE"
+          python guard.py before
+      - name: Capture all raw public tuples then run immutable public oracle probe
+        shell: bash
+        run: |
+          set +e
+          cd "$NEW142_EVIDENCE"
+          python -u capture.py 2>&1 | tee raw.log
+          raw_status=${PIPESTATUS[0]}
+          echo "$raw_status" > raw.status
+          echo "NEW142_RAW_STATUS $raw_status"
+          python -u probe.py 2>&1 | tee probe.log
+          probe_status=${PIPESTATUS[0]}
+          echo "$probe_status" > probe.status
+          echo "NEW142_PROBE_STATUS $probe_status"
+          exit 0
+      - name: Check unchanged source install and probe before strict saved-log assessment
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$NEW142_EVIDENCE"
+          python guard.py after
+          python assess.py
